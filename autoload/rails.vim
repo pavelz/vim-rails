@@ -87,6 +87,14 @@ function! s:rquote(str)
   endif
 endfunction
 
+function! s:fnameescape(file) abort
+  if exists('*fnameescape')
+    return fnameescape(a:file)
+  else
+    return escape(a:file," \t\n*?[{`$\\%#'\"|!<")
+  endif
+endfunction
+
 function! s:dot_relative(path) abort
   let slash = matchstr(a:path, '^\%(\w\:\)\=\zs[\/]')
   if !empty(slash)
@@ -99,7 +107,7 @@ function! s:dot_relative(path) abort
 endfunction
 
 function! s:mods(mods) abort
-  return substitute(a:mods, '^\s', '', '')
+  return s:gsub(a:mods, '[<]mods[>]\s*|^\s', '')
 endfunction
 
 function! s:webcat() abort
@@ -145,7 +153,11 @@ function! s:simplify(path) abort
 endfunction
 
 function! s:glob(path) abort
-  return s:fcall('glob', a:path, 0, 1)
+  if v:version >= 704
+    return s:fcall('glob', a:path, 0, 1)
+  else
+    return split(s:fcall('glob', a:path), "\n")
+  endif
 endfunction
 
 function! s:mkdir_p(path) abort
@@ -187,9 +199,9 @@ endfunction
 function! s:push_chdir(...)
   if !exists("s:command_stack") | let s:command_stack = [] | endif
   if s:active() && (a:0 ? getcwd() !=# rails#app().path() : !s:startswith(getcwd(), rails#app().real()))
-    let cd = haslocaldir() ? 'lcd' : exists(':tcd') && haslocaldir(-1) ? 'tcd' : 'cd'
-    call add(s:command_stack,cd . ' ' . s:escarg(getcwd()))
-    exe cd s:escarg(rails#app().real())
+    let chdir = exists("*haslocaldir") && haslocaldir() ? "lchdir " : "chdir "
+    call add(s:command_stack,chdir.s:escarg(getcwd()))
+    exe chdir.s:escarg(rails#app().real())
   else
     call add(s:command_stack,"")
   endif
@@ -1092,26 +1104,26 @@ endfunction
 function! s:Clog(bang, mods, arg) abort
   let lf = rails#app().real('log/' . (empty(a:arg) ? s:environment() : a:arg) . '.log')
   if !filereadable(lf)
-    return 'cgetfile ' . fnameescape(lf)
+    return 'cgetfile ' . s:fnameescape(lf)
   endif
   let [mp, efm, cc] = [&l:mp, &l:efm, get(b:, 'current_compiler', '')]
-  let chdir = haslocaldir() ? 'lcd' : exists(':tcd') && haslocaldir(-1) ? 'tcd' : 'cd'
+  let chdir = exists("*haslocaldir") && haslocaldir() ? 'lchdir' : 'chdir'
   let cwd = getcwd()
   try
     compiler rails
-    exe chdir fnameescape(rails#app().real())
-    exe 'cgetfile' fnameescape(lf)
+    exe chdir s:fnameescape(rails#app().real())
+    exe 'cgetfile' s:fnameescape(lf)
   finally
     let [&l:mp, &l:efm, b:current_compiler] = [mp, efm, cc]
     if empty(cc) | unlet! b:current_compiler | endif
-    exe chdir fnameescape(cwd)
+    exe chdir s:fnameescape(cwd)
   endtry
   return s:mods(a:mods) . ' copen|$'
 endfunction
 
 function! s:Plog(bang, arg) abort
   let lf = rails#app().path('log/' . (empty(a:arg) ? s:environment() : a:arg) . '.log')
-  return 'pedit' . (a:bang ? '!' : '') . ' +$ ' . fnameescape(lf)
+  return 'pedit' . (a:bang ? '!' : '') . ' +$ ' . s:fnameescape(lf)
 endfunction
 
 function! rails#command(bang, mods, count, arg) abort
@@ -1142,16 +1154,16 @@ function! rails#command(bang, mods, count, arg) abort
   let dir = matchstr(arg, ' ["'']\=\zs[^- "''][^ "'']\+')
   if isdirectory(dir)
     let old_errorformat = &l:errorformat
-    let chdir = haslocaldir() ? 'lcd' : exists(':tcd') && haslocaldir(-1) ? 'tcd' : 'cd'
+    let chdir = exists("*haslocaldir") && haslocaldir() ? 'lchdir' : 'chdir'
     let cwd = getcwd()
     try
-      exe chdir fnameescape(dir)
+      exe chdir s:fnameescape(dir)
       let &l:errorformat = s:efm_generate
       exe 'cgetfile' temp
       return 'copen|cfirst'
     finally
       let &l:errorformat = old_errorformat
-      exe chdir fnameescape(cwd)
+      exe chdir s:fnameescape(cwd)
     endtry
   elseif exists('error') && !error && !empty(dir)
     call s:warn("Couldn't find app directory")
@@ -1176,7 +1188,7 @@ function! s:TagsCommand() abort
     call s:error("ctags not found")
     return ''
   endif
-  let cd = haslocaldir() ? 'lcd' : exists(':tcd') && haslocaldir(-1) ? 'tcd' : 'cd'
+  let cd = exists('*haslocaldir') && haslocaldir() ? 'lcd' : 'cd'
   let cwd = getcwd()
   try
     execute cd fnameescape(rails#app().real())
@@ -1247,7 +1259,7 @@ function! s:qf_pre() abort
   let dir = s:efm_dir()
   let cwd = getcwd()
   if !empty(dir) && dir !=# cwd
-    let cd = haslocaldir() ? 'lcd' : exists(':tcd') && haslocaldir(-1) ? 'tcd' : 'cd'
+    let cd = exists('*haslocaldir') && haslocaldir() ? 'lcd' : 'cd'
     execute 'lcd' fnameescape(dir)
     let s:qf_post = cd . ' ' . fnameescape(cwd)
   endif
@@ -2159,16 +2171,7 @@ endfunction
 " }}}1
 " Navigation {{{1
 
-function! s:BufNavCommands() abort
-  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_related   R   exe   s:Related('<mods> E<bang>',<line1>,<line2>,<count>,<f-args>)
-  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_related   RE  exe   s:Related('<mods> E<bang>',<line1>,<line2>,<count>,<f-args>)
-  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_related   RS  exe   s:Related('<mods> S<bang>',<line1>,<line2>,<count>,<f-args>)
-  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_related   RV  exe   s:Related('<mods> V<bang>',<line1>,<line2>,<count>,<f-args>)
-  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_related   RT  exe   s:Related('<mods> T<bang>',<line1>,<line2>,<count>,<f-args>)
-  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_edit      RD  exe   s:Related('<mods> D<bang>',<line1>,<line2>,<count>,<f-args>)
-  if get(g:, 'rails_no_alternate_commands', 0)
-    return
-  endif
+function! s:BufNavCommands()
   command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_alternate A   exe s:Alternate('<mods> E<bang>',<line1>,<line2>,<count>,<f-args>)
   command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_alternate AE  exe s:Alternate('<mods> E<bang>',<line1>,<line2>,<count>,<f-args>)
   command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_alternate AS  exe s:Alternate('<mods> S<bang>',<line1>,<line2>,<count>,<f-args>)
@@ -2176,6 +2179,12 @@ function! s:BufNavCommands() abort
   command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_alternate AT  exe s:Alternate('<mods> T<bang>',<line1>,<line2>,<count>,<f-args>)
   command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_edit      AD  exe s:Alternate('<mods> D<bang>',<line1>,<line2>,<count>,<f-args>)
   command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_edit      AR  exe s:Alternate('<mods> D<bang>',<line1>,<line2>,<count>,<f-args>)
+  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_related   R   exe   s:Related('<mods> E<bang>',<line1>,<line2>,<count>,<f-args>)
+  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_related   RE  exe   s:Related('<mods> E<bang>',<line1>,<line2>,<count>,<f-args>)
+  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_related   RS  exe   s:Related('<mods> S<bang>',<line1>,<line2>,<count>,<f-args>)
+  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_related   RV  exe   s:Related('<mods> V<bang>',<line1>,<line2>,<count>,<f-args>)
+  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_related   RT  exe   s:Related('<mods> T<bang>',<line1>,<line2>,<count>,<f-args>)
+  command! -buffer -bar -nargs=* -range=0 -complete=customlist,s:Complete_edit      RD  exe   s:Related('<mods> D<bang>',<line1>,<line2>,<count>,<f-args>)
 endfunction
 
 function! s:jumpargs(file, jump) abort
@@ -2295,13 +2304,9 @@ function! s:match_partial(func) abort
   elseif res =~# '^\w\+\%(\.\w\+\)\=$'
     let res = rails#singularize(s:sub(res, '^\w*\.', ''))
     return s:findview(rails#pluralize(res).'/_'.res)
-  elseif res =~# '^@\w\+$'
-    let view = s:findview('_' . rails#singularize(res[1:-1]), '')
-    if !empty(view)
-      return view
-    endif
+  else
+    return s:findview(s:sub(s:sub(res, '^:=[''"@]=', ''), '[^/]*$', '_&'))
   endif
-  return s:findview(s:sub(s:sub(res, '^:=[''"@]=', ''), '[^/]*$', '_&'))
 endfunction
 
 function! s:suffixes(type) abort
@@ -2429,7 +2434,7 @@ function! rails#sprockets_cfile(...) abort
   if empty(file)
     return eval(s:cfile_delegate(a:0 ? a:1 : ''))
   endif
-  let escaped = fnameescape(file)
+  let escaped = s:fnameescape(file)
   if file ==# escaped
     return file
   else
@@ -2682,7 +2687,7 @@ endfunction
 
 function! s:app_routes() dict abort
   if self.cache.needs('routes')
-    let cd = haslocaldir() ? 'lcd' : exists(':tcd') && haslocaldir(-1) ? 'tcd' : 'cd'
+    let cd = exists('*haslocaldir') && haslocaldir() ? 'lcd' : 'cd'
     let cwd = getcwd()
     let routes = []
     let paths = {}
@@ -3066,12 +3071,7 @@ function! s:fixturesEdit(cmd,...)
   if file =~ '\.\w\+$' && rails#app().find_file(c.e, dirs, []) ==# ''
     return s:edit(a:cmd,file)
   else
-    let exts = ['.yml','.csv','.rb']
-    call extend(exts,
-          \ filter(map(keys(filter(copy(rails#app().projections()), 'get(v:val, "type") is# "fixtures"')),
-          \ 'matchstr(v:val, "^\\C\\%(test\\|spec\\)/factories/\\*\\zs.\\+$")'), 'len(v:val)'))
-    call s:uniq(exts)
-    return s:open(a:cmd, rails#app().find_file(c.e, dirs, exts, file))
+    return s:open(a:cmd, rails#app().find_file(c.e, dirs, ['.yml', '.csv', '.rb'], file))
   endif
 endfunction
 
@@ -3204,9 +3204,9 @@ endfunction
 
 call s:add_methods('readable', ['resolve_view', 'resolve_layout'])
 
-function! s:findview(name, ...) abort
+function! s:findview(name) abort
   let view = s:active() ? rails#buffer().resolve_view(a:name, line('.')) : ''
-  return len(view) ? view : a:0 ? a:1 : (a:name =~# '\.' ? a:name : a:name . '.' . s:format())
+  return empty(view) ? (a:name =~# '\.' ? a:name : a:name . '.' . s:format()) : view
 endfunction
 
 function! s:findlayout(name)
@@ -3432,7 +3432,7 @@ function! s:readable_open_command(cmd, argument, name, projections) dict abort
     if empty(defaults)
       return 'echoerr "E471: Argument required"'
     else
-      return cmd . ' ' . fnameescape(defaults[0])
+      return cmd . ' ' . s:fnameescape(defaults[0])
     endif
   endif
   if djump !~# '^!'
@@ -3459,9 +3459,9 @@ function! s:readable_open_command(cmd, argument, name, projections) dict abort
         call map(template, 's:expand_placeholders(v:val, ph)')
         call map(template, 's:gsub(v:val, "\t", "  ")')
         let file = fnamemodify(s:simplify(file), ':.')
-        return cmd . ' ' . fnameescape(file) . '|call setline(1, '.string(template).')' . '|set nomod'
+        return cmd . ' ' . s:fnameescape(file) . '|call setline(1, '.string(template).')' . '|set nomod'
       else
-        return cmd . ' +AD ' . fnameescape(file)
+        return cmd . ' +AD ' . s:fnameescape(file)
       endif
     endif
   endfor
@@ -3569,6 +3569,7 @@ function! s:AR(cmd,related,line1,line2,count,...) abort
     if confirm && !line && !has_path
       let projected = rails#buffer().projected_with_raw('alternate')
       call filter(projected, 'rails#app().has_path(matchstr(v:val[1], "^[^{}]*/"))')
+      echom projected
       if len(projected)
         let choices = ['Create alternate file?']
         let i = 0
@@ -3829,7 +3830,7 @@ function! s:ViewExtract(bang, mods, first, last, file) abort
   silent exe a:last.'put =spaces . renderstr'
   silent exe a:first.','.a:last.'delete _'
   let filetype = &filetype
-  silent exe s:mods(a:mods) 'split' fnameescape(fnamemodify(out, ':.'))
+  silent exe s:mods(a:mods) 'split' s:fnameescape(fnamemodify(out, ':.'))
   let existing_last = line('$')
   silent $put =contents
   silent exe '1,' . existing_last . 'delete _'
@@ -3854,7 +3855,7 @@ function! s:RubyExtract(bang, mods, root, before, name) range abort
   elseif out !~# '^\a\a\+:' && !isdirectory(fnamemodify(out,':h'))
     return s:error('No such directory')
   endif
-  execute s:mods(a:mods) 'split' fnameescape(out)
+  execute s:mods(a:mods) 'split' s:fnameescape(out)
   silent %delete_
   call setline(1, ['module '.rails#camelize(a:name)] + a:before + content + ['end'])
 endfunction
@@ -4245,7 +4246,19 @@ endfunction
 " Projections {{{1
 
 function! rails#json_parse(string) abort
-  return json_decode(type(a:string) == type([]) ? join(a:string, ' ') : a:string)
+  let string = type(a:string) == type([]) ? join(a:string, ' ') : a:string
+  if exists('*json_decode')
+    return json_decode(string)
+  endif
+  let [null, false, true] = ['', 0, 1]
+  let stripped = substitute(string,'\C"\(\\.\|[^"\\]\)*"','','g')
+  if stripped !~# "[^,:{}\\[\\]0-9.\\-+Eaeflnr-u \n\r\t]"
+    try
+      return eval(substitute(string,"[\r\n]"," ",'g'))
+    catch
+    endtry
+  endif
+  throw "invalid JSON: ".string
 endfunction
 
 function! s:app_gems() dict abort
@@ -4428,6 +4441,10 @@ let s:has_projections = {
       \  },
       \  "rails2": {"config/environment.rb": {"type": "environment"}},
       \  "rails3": {"config/application.rb": {"type": "environment"}},
+      \  "app": {
+      \    "app/*_controller.rb": {"alternate": "spec/{}_controller_spec.rb"},
+      \    "app/models/*.rb": {"alternate": "spec/models/{}_spec.rb"},
+      \  },
       \  "spec": {
       \    "spec/*_spec.rb": {"alternate": "app/{}.rb"},
       \    "spec/controllers/*_spec.rb": {
@@ -4604,6 +4621,7 @@ let s:has_projections = {
       \  }
       \}
 
+let s:projections_for_gems = {}
 function! s:app_projections() dict abort
   let dict = s:combine_projections({}, s:default_projections)
   for [k, v] in items(s:has_projections)
@@ -4615,26 +4633,25 @@ function! s:app_projections() dict abort
   call s:combine_projections(dict, get(g:, 'rails_projections', ''))
   for gem in keys(get(g:, 'rails_gem_projections', {}))
     if self.has_gem(gem)
-      try
-        if type(g:rails_gem_projections[gem]) ==# v:t_string
-          let file = g:rails_gem_projections[gem]
-          if file !~# '^\a\+:\|^/'
-            if !has_key(self.gems(), gem)
-              continue
-            endif
-            let file = self.gems()[gem] . '/' . file
-          endif
-          if file =~# '/$'
-            let file .= 'projections.json'
-          endif
-          call s:combine_projections(dict, rails#json_parse(s:readfile(file)))
-        else
-          call s:combine_projections(dict, g:rails_gem_projections[gem])
-        endif
-      catch
-      endtry
+      call s:combine_projections(dict, g:rails_gem_projections[gem])
     endif
   endfor
+  let gem_path = escape(join(values(self.gems()),','), ' ')
+  if !empty(gem_path)
+    if !has_key(s:projections_for_gems, gem_path)
+      let gem_projections = {}
+      for path in ['lib/', 'lib/rails/']
+        for file in findfile(path.'projections.json', gem_path, -1)
+          try
+            call s:combine_projections(gem_projections, rails#json_parse(s:readfile(self.path(file))))
+          catch
+          endtry
+        endfor
+      endfor
+      let s:projections_for_gems[gem_path] = gem_projections
+    endif
+    call s:combine_projections(dict, s:projections_for_gems[gem_path])
+  endif
   if self.cache.needs('projections')
     call self.cache.set('projections', {})
 
@@ -4647,7 +4664,7 @@ function! s:app_projections() dict abort
             call self.cache.set('projections', projections)
             break
           endif
-        catch /^Vim(\a\+):E474:/
+        catch /^invalid JSON:/
         endtry
       endif
     endfor
@@ -4874,7 +4891,7 @@ function! rails#sprockets_setup(type) abort
   let b:undo_ftplugin = get(b:, 'undo_ftplugin', 'exe') . '|setlocal pa= sua= inc='
 
   let map = ''
-  let cfilemap = maparg('<Plug><cfile>', 'c', 0, 1)
+  let cfilemap = v:version + has('patch032') >= 704 ? maparg('<Plug><cfile>', 'c', 0, 1) : {}
   if get(cfilemap, 'buffer') && cfilemap.expr && cfilemap.rhs !~# 'rails#\|Ruby'
     let map = string(maparg('<Plug><cfile>', 'c'))
   endif
@@ -5008,7 +5025,7 @@ function! rails#buffer_setup() abort
     let &l:errorformat = substitute(&l:errorformat, '%\\&completion=rails#complete_\zsrails', 'rake', 'g')
   endif
 
-  let dir = '-dir=' . substitute(fnameescape(fnamemodify(self.app().real(), ':~')), '^\\\~', '\~', '') . ' '
+  let dir = '-dir=' . substitute(s:fnameescape(fnamemodify(self.app().real(), ':~')), '^\\\~', '\~', '') . ' '
 
   let dispatch = self.projected('dispatch')
   if !empty(dispatch)
